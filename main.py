@@ -24,17 +24,12 @@ from forecasting_tools import (
     SmartSearcher,
     clean_indents,
 )
+from forecasting_tools import RefreshingBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
 class TemplateForecaster(ForecastBot):
     """
-    This is a copy of the template bot for Q2 2025 Metaculus AI Tournament.
-    The official bots on the leaderboard use AskNews in Q2.
-    Main template bot changes since Q1
-    - Support for new units parameter was added
-    - You now set your llms when you initialize the bot (making it easier to switch between and benchmark different models)
-
     The main entry point of this bot is `forecast_on_tournament` in the parent class.
     See the script at the bottom of the file for more details on how to run the bot.
     Ignoring the finer details, the general flow is:
@@ -66,9 +61,13 @@ class TemplateForecaster(ForecastBot):
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
             research = ""
+            
             if os.getenv("ASKNEWS_CLIENT_ID") and os.getenv("ASKNEWS_SECRET"):
                 research = await AskNewsSearcher().get_formatted_news_async(
-                    question.question_text
+                    question.question_text,
+                    sources=["asknews", "google"],
+                    search_depth=4,
+                    max_depth=6,
                 )
             elif os.getenv("EXA_API_KEY"):
                 research = await self._call_exa_smart_searcher(
@@ -221,19 +220,28 @@ class TemplateForecaster(ForecastBot):
             """
         )
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        prediction: float = PredictionExtractor.extract_last_percentage_value(
-            reasoning, max_prediction=1, min_prediction=0
+        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        binary_prediction: BinaryPrediction = await structure_output(
+            reasoning, BinaryPrediction, model=self.get_llm("parser", "llm")
         )
+        decimal_pred = max(0.01, min(0.99, binary_prediction.   prediction_in_decimal))
+        
         logger.info(
-            f"Forecasted URL {question.page_url} as {prediction} with reasoning:\n{reasoning}"
+            f"Forecasted URL {question.page_url} with prediction: {decimal_pred}
         )
-        return ReasonedPrediction(
-            prediction_value=prediction, reasoning=reasoning
-        )
+
+        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
 
     async def _run_forecast_on_multiple_choice(
         self, question: MultipleChoiceQuestion, research: str
     ) -> ReasonedPrediction[PredictedOptionList]:
+        parsing_instructions = clean_indents(
+            f"""
+            Make sure that all option names are one of the following:
+            {question.options}
+            The text you are parsing may prepend these options with some variation of "Option" which you should remove if not part of the option names I just gave you.
+            """
+        )
         prompt = clean_indents(
             f"""
             You are a professional forecaster interviewing for a job.
@@ -276,16 +284,19 @@ class TemplateForecaster(ForecastBot):
             """
         )
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        prediction: PredictedOptionList = (
-            PredictionExtractor.extract_option_list_with_percentage_afterwards(
-                reasoning, question.options
-            )
+        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        predicted_option_list: PredictedOptionList = await structure_output(
+            text_to_structure=reasoning,
+            output_type=PredictedOptionList,
+            model=self.get_llm("parser", "llm"),
+            additional_instructions=parsing_instructions,
         )
+
         logger.info(
-            f"Forecasted URL {question.page_url} as {prediction} with reasoning:\n{reasoning}"
+            f"Forecasted URL {question.page_url} as {predicted_option_list"
         )
         return ReasonedPrediction(
-            prediction_value=prediction, reasoning=reasoning
+            prediction_value=predicted_option_list, reasoning=reasoning
         )
 
     async def _run_forecast_on_numeric(
@@ -352,13 +363,14 @@ class TemplateForecaster(ForecastBot):
             """
         )
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        prediction: NumericDistribution = (
-            PredictionExtractor.extract_numeric_distribution_from_list_of_percentile_number_and_probability(
-                reasoning, question
-            )
+        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
+        percentile_list: list[Percentile] = await structure_output(
+            reasoning, list[Percentile], model=self.get_llm("parser", "llm")
         )
+        prediction = NumericDistribution.from_question(percentile_list, question)
+
         logger.info(
-            f"Forecasted URL {question.page_url} as {prediction.declared_percentiles} with reasoning:\n{reasoning}"
+            f"Forecasted URL {question.page_url} as {prediction.declared_percentiles}"
         )
         return ReasonedPrediction(
             prediction_value=prediction, reasoning=reasoning
@@ -367,17 +379,25 @@ class TemplateForecaster(ForecastBot):
     def _create_upper_and_lower_bound_messages(
         self, question: NumericQuestion
     ) -> tuple[str, str]:
+        if question.nominal_upper_bound is not None:
+            upper_bound_number = question.nominal_upper_bound
+        else:
+            upper_bound_number = question.upper_bound
+        if question.nominal_lower_bound is not None:
+            lower_bound_number = question.nominal_lower_bound
+        else:
+            lower_bound_number = question.lower_bound
         if question.open_upper_bound:
-            upper_bound_message = ""
+            upper_bound_message = f"The question creator thinks the number is likely not higher than {upper_bound_number}."
         else:
             upper_bound_message = (
-                f"The outcome can not be higher than {question.upper_bound}."
+                f"The outcome can not be higher than {upper_bound_number}."
             )
         if question.open_lower_bound:
-            lower_bound_message = ""
+            lower_bound_message = f"The question creator thinks the number is likely not lower than {lower_bound_number}."
         else:
             lower_bound_message = (
-                f"The outcome can not be lower than {question.lower_bound}."
+                f"The outcome can not be lower than {lower_bound_number}."
             )
         return upper_bound_message, lower_bound_message
 
@@ -394,22 +414,22 @@ if __name__ == "__main__":
     litellm_logger.propagate = False
 
     parser = argparse.ArgumentParser(
-        description="Run the Q1TemplateBot forecasting system"
+        description="Run the forecasting system"
     )
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "quarterly_cup", "test_questions"],
+        choices=["tournament", "metaculus_cup", "test_questions"],
         default="tournament",
         help="Specify the run mode (default: tournament)",
     )
     args = parser.parse_args()
-    run_mode: Literal["tournament", "quarterly_cup", "test_questions"] = (
+    run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = (
         args.mode
     )
     assert run_mode in [
         "tournament",
-        "quarterly_cup",
+        "metaculus_cup",
         "test_questions",
     ], "Invalid run mode"
 
@@ -432,20 +452,30 @@ if __name__ == "__main__":
     )
 
     if run_mode == "tournament":
-        forecast_reports = asyncio.run(
+        main_tournament_reports = asyncio.run(
             template_bot.forecast_on_tournament(
                 MetaculusApi.CURRENT_AI_COMPETITION_ID, return_exceptions=True
             )
         )
-    elif run_mode == "quarterly_cup":
-        # The quarterly cup is a good way to test the bot's performance on regularly open questions. You can also use AXC_2025_TOURNAMENT_ID = 32564
-        # The new quarterly cup may not be initialized near the beginning of a quarter
+
+        minibench_reports = asyncio.run(
+            template_bot.forecast_on_tournament(
+                MetaculusApi.CURRENT_MINIBENCH_ID, return_exceptions=True
+            )
+        )
+
+        forecast_reports = main_tournament_reports + minibench_reports
+    
+    elif run_mode == "metaculus_cup":
+        # The Metaculus cup is a good way to test the bot's performance on regularly open questions. You can also use AXC_2025_TOURNAMENT_ID = 32564 or AI_2027_TOURNAMENT_ID = "ai-2027"
+        # The Metaculus cup may not be initialized near the beginning of a season (i.e. January, May, September)
         template_bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
             template_bot.forecast_on_tournament(
-                MetaculusApi.CURRENT_QUARTERLY_CUP_ID, return_exceptions=True
+                MetaculusApi.CURRENT_METACULUS_CUP_ID, return_exceptions=True
             )
         )
+
     elif run_mode == "test_questions":
         # Example questions are a good way to test the bot's performance on a single question
         EXAMPLE_QUESTIONS = [
