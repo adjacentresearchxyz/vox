@@ -16,28 +16,26 @@ Vox is a sophisticated forecasting bot for the [Metaculus AI Tournament](https:/
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Vox Forecaster                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  Research Layer                                                  │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐                   │
-│  │  ADJ API  │  │  AskNews  │  │ Perplexity│                   │
-│  │ (priors)  │  │  (news)   │  │ (research)│                   │
-│  └───────────┘  └───────────┘  └───────────┘                   │
+│  Research Layer                                                 │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐                    │
+│  │  ADJ API  │  │  AskNews  │  │ Perplexity│                    │
+│  │ (priors)  │  │  (news)   │  │ (research)│                    │
+│  └───────────┘  └───────────┘  └───────────┘                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Agent Committee (5 agents with peer review)                    │
-│  ┌──────────────────┐  ┌──────────────────┐                    │
-│  │ base_rate_analyst│  │   market_prior   │ ← 1.5x weight      │
-│  │    (weight 1.0)  │  │   (weight 1.5)   │                    │
-│  └──────────────────┘  └──────────────────┘                    │
-│  ┌──────────────────┐  ┌──────────────────┐                    │
-│  │ status_quo_anchor│  │ devils_advocate  │                    │
-│  │    (weight 1.0)  │  │   (weight 1.0)   │                    │
-│  └──────────────────┘  └──────────────────┘                    │
+│  ┌──────────────────┐  ┌──────────────────┐                     │
+│  │ base_rate_analyst│  │   market_prior   │                     │
+│  │    (weight 1.0)  │  │   (weight 1.5)   │                     │
+│  └──────────────────┘  └──────────────────┘                     │
+│  ┌──────────────────┐  ┌──────────────────┐                     │
+│  │ status_quo_anchor│  │ devils_advocate  │                     │
+│  │    (weight 1.0)  │  │   (weight 1.0)   │                     │
+│  └──────────────────┘  └──────────────────┘                     │
 │  ┌──────────────────┐                                           │
-│  │   synthesizer    │ ← 1.5x weight                            │
+│  │   synthesizer    │                                           │
 │  │   (weight 1.5)   │                                           │
 │  └──────────────────┘                                           │
 ├─────────────────────────────────────────────────────────────────┤
-│  Workflow: Initial → Peer Review → Revision → Aggregate        │
-└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Agent Personas
@@ -49,31 +47,6 @@ Vox is a sophisticated forecasting bot for the [Metaculus AI Tournament](https:/
 | **status_quo_anchor** | 1.0 | Conservative default, regression to mean |
 | **devils_advocate** | 1.0 | Challenge consensus, find overlooked risks |
 | **synthesizer** | 1.5 | Combine perspectives, resolve disagreements |
-
-## Project Structure
-
-```
-vox/
-├── main.py                    # Entry point with VoxForecaster class
-├── config.py                  # Centralized configuration
-├── test_setup.py              # Setup verification script
-│
-├── bot/
-│   ├── agents.py              # LLMAgent class, committee factory
-│   ├── forecaster.py          # Workflow orchestrator
-│   ├── prompts.py             # Agent system prompts, templates
-│   └── utils.py               # Parsing, aggregation utilities
-│
-├── research/
-│   ├── adj_client.py          # ADJ REST API client with caching
-│   └── integrated_search.py   # Multi-source research orchestrator
-│
-├── models/
-│   └── schemas.py             # Pydantic models for API responses
-│
-└── .github/workflows/
-    └── run_bot_on_tournament.yaml
-```
 
 ## Quick Start
 
@@ -253,13 +226,7 @@ AGENT_CONFIGS["new_agent"] = AgentConfig(
 
 - [Metaculus AI Tournament](https://www.metaculus.com/aib/)
 - [forecasting-tools package](https://github.com/Metaculus/forecasting-tools)
-- [ADJ Political Index API](https://v2.api.adj.news)
 - [Metaculus Discord](https://discord.com/invite/NJgCC2nDfh) - #build-a-forecasting-bot
-
-## Support
-
-- Metaculus Discord: `#build-a-forecasting-bot` channel
-- Email: `ben [at] metaculus [.com]`
 
 ## License
 
